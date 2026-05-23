@@ -142,6 +142,28 @@ async def main():
     files = [f for f in file_list if not f.get('dir')]
     dirs = [f for f in file_list if f.get('dir')]
     
+    # 检查 iCloud 中已有的文件，跳过不需要重复下载的
+    icloud_dir = "/Users/kylin/Library/Mobile Documents/com~apple~CloudDocs/法律相关/全国法官培训统编教材（2025）"
+    existing_files = set()
+    if os.path.exists(icloud_dir):
+        for f in os.listdir(icloud_dir):
+            if f.endswith(".pdf"):
+                existing_files.add(f)
+    
+    filtered_files = []
+    skipped = 0
+    for f in files:
+        fname = f.get('file_name', '')
+        if fname in existing_files:
+            print(f"  ⏭️  跳过 (已在 iCloud): {fname}")
+            skipped += 1
+        else:
+            filtered_files.append(f)
+    files = filtered_files
+    
+    if skipped > 0:
+        print(f"\n⏭️  跳过 {skipped} 个已存在于 iCloud 的文件")
+    
     total_size = sum(f.get('size', 0) for f in files)
     total_size_str = ""
     if total_size >= 1024**3:
@@ -151,7 +173,7 @@ async def main():
     else:
         total_size_str = f"{total_size/1024:.2f} KB"
     
-    print(f"\n📊 总计: {len(files)} 个文件, {len(dirs)} 个子文件夹, 总大小: {total_size_str}")
+    print(f"\n📊 需下载: {len(files)} 个文件, {len(dirs)} 个子文件夹, 总大小: {total_size_str}")
     
     # 构建文件夹映射
     folders_map = {}

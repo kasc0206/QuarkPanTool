@@ -322,19 +322,93 @@ class QuarkPanFileManager:
             return task_id
 
     @staticmethod
-    async def download_file(download_url: str, save_path: str, headers: dict) -> None:
+    @staticmethod
+    async def download_part(url: str, headers: dict, start: int, end: int,
+                            save_path: str, pbar: tqdm) -> None:
+        """下载文件的指定字节范围（HTTP Range）"""
+        part_headers = headers.copy()
+        part_headers["Range"] = f"bytes={start}-{end}"
         async with httpx.AsyncClient() as client:
-            timeout = httpx.Timeout(60.0, connect=60.0)
-            async with client.stream("GET", download_url, headers=headers, timeout=timeout) as response:
-                if response.headers.get("content-length") is None:
-                    response.headers["content-length"] = "0"
+            timeout = httpx.Timeout(120.0, connect=60.0)
+            for attempt in range(3):
+                try:
+                    async with client.stream("GET", url, headers=part_headers, timeout=timeout) as response:
+                        response.raise_for_status()
+                        with open(save_path, "r+b") as f:
+                            f.seek(start)
+                            async for chunk in response.aiter_bytes():
+                                if chunk:
+                                    f.write(chunk)
+                                    pbar.update(len(chunk))
+                        return
+                except Exception as e:
+                    if attempt == 2:
+                        raise e
+                    await asyncio.sleep(1)
+
+    @staticmethod
+    async def download_file(download_url: str, save_path: str, headers: dict) -> None:
+        # 先获取文件大小
+        file_size = 0
+        async with httpx.AsyncClient() as client:
+            timeout = httpx.Timeout(30.0, connect=30.0)
+            try:
+                head_resp = await client.head(download_url, headers=headers, timeout=timeout)
+                content_length = int(head_resp.headers.get("content-length", 0))
+                if content_length > 0:
+                    file_size = content_length
+                else:
+                    # HEAD 不返回大小，用 Range 请求获取
+                    range_headers = headers.copy()
+                    range_headers["Range"] = "bytes=0-0"
+                    get_resp = await client.get(download_url, headers=range_headers, timeout=timeout)
+                    if "content-range" in get_resp.headers:
+                        file_size = int(get_resp.headers["content-range"].split("/")[-1])
+                    elif "content-length" in get_resp.headers:
+                        file_size = int(get_resp.headers["content-length"])
+            except Exception:
+                pass
+
+        # 计算分片数：每 50MB 一片，最多 16 片
+        BLOCK_SIZE = 50 * 1024 * 1024  # 50MB
+        if file_size > BLOCK_SIZE:
+            thread_count = min(16, max(2, file_size // BLOCK_SIZE))
+        else:
+            thread_count = 1
+
+        with tqdm(unit="B", unit_scale=True,
+                  desc=os.path.basename(save_path),
+                  ncols=80, total=file_size if file_size > 0 else None) as pbar:
+            if thread_count == 1 or file_size <= 0:
+                # 小文件或未知大小：单线程下载
+                async with httpx.AsyncClient() as client:
+                    timeout = httpx.Timeout(120.0, connect=60.0)
+                    async with client.stream("GET", download_url, headers=headers, timeout=timeout) as response:
+                        with open(save_path, "wb") as f:
+                            async for chunk in response.aiter_bytes():
+                                f.write(chunk)
+                                pbar.update(len(chunk))
+            else:
+                # 大文件：多线程分片下载
+                # 预分配文件空间
                 with open(save_path, "wb") as f:
-                    with tqdm(unit="B", unit_scale=True,
-                              desc=os.path.basename(save_path),
-                              ncols=80) as pbar:
-                        async for chunk in response.aiter_bytes():
-                            f.write(chunk)
-                            pbar.update(len(chunk))
+                    f.truncate(file_size)
+
+                part_size = file_size // thread_count
+                tasks = []
+                for i in range(thread_count):
+                    start = i * part_size
+                    if i == thread_count - 1:
+                        end = file_size - 1
+                    else:
+                        end = (i + 1) * part_size - 1
+                    task = asyncio.create_task(
+                        QuarkPanFileManager.download_part(
+                            download_url, headers, start, end, save_path, pbar
+                        )
+                    )
+                    tasks.append(task)
+                await asyncio.gather(*tasks)
 
     async def quark_file_download(self, fids: list[str], folder: str = '', folders_map=None) -> None:
         folders_map = folders_map or {}
