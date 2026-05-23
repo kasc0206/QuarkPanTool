@@ -128,6 +128,15 @@ ENV/
 env.bak/
 venv.bak/
 
+# User config files (contain sensitive cookie data)
+config/cookies.txt
+config/config.json
+
+# Downloaded files
+downloads/
+output/
+share/
+
 # Spyder project settings
 .spyderproject
 .spyproject
